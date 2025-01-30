@@ -1,4 +1,5 @@
 # 实用 Swizzle 教程
+实验仓库地址: https://github.com/Chtholly-Boss/swizzle
 ## 前言
 最近科研工作中需要使用 Tensor Core 进行算子优化，在优化过程中发现了大量的 **Bank Conflict**，感到十分苦恼。听说 **CUTLASS** 提出了一种 **Bank Conflict Free** 的 **Swizzle** 技术，感觉很高大上，遂进行了高强度的 RTFM 和博客阅读。
 Zhihu 上对于 Swizzle 的讲解已有了不少的优秀的文章，笔者看完后感觉十分长脑子，但在落地的时候我的手跟我说他还没学会，他对以下几点感到十分苦恼：
@@ -177,5 +178,3 @@ asm volatile(
 ## Reference
 1. [CUDA C++ Programming Guide](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#warp-matrix-functions)
 2. [CUDA PTX ISA](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#warp-level-matrix-multiply-accumulate-instructions)
-
-[实验仓库地址]()
