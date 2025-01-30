@@ -69,7 +69,21 @@ Emm..., 如图所示，Global Load/Store 均不造成 bank conflict，那么这�
 
 ![ldmatrix](./assets/load_frag_a.png)
 
-该过程为 Warp 级别的协作过程，
+
+为方便后续调用，我们将该指令进行封装如下：
+```cpp
+#define REG(val) (*reinterpret_cast<uint32_t *>(&(val)))
+__device__ __forceinline__ void ldmatrix_sync(fp16 *dst, void *addr) {
+    asm volatile(
+        "ldmatrix.sync.aligned.x4.m8n8.shared.b16 {%0, %1, %2, %3}, [%4];"
+        : "=r"(REG(dst[0])),
+          "=r"(REG(dst[2])),
+          "=r"(REG(dst[4])),
+          "=r"(REG(dst[6]))
+        : "l"(__cvta_generic_to_shared(addr)));
+}
+```
+其中 `dst` 传入的参数即为含有 8 个 half 的 `fragment`
 
 ### STS 指令
 STS 即 st.shared, 表示将寄存器的内容存到 shared memory 中。由于该指令处理的是结果矩阵，因此需要关注结果矩阵的布局。在 sm90 后结果矩阵的存储也可能使用 `stmatrix` 指令，由于思路都差不多，本文重点关注 Load，读者可根据需要决定是否对 Store 过程也进行优化。
@@ -104,9 +118,13 @@ STS 即 st.shared, 表示将寄存器的内容存到 shared memory 中。由于�
 ### 布局重映射法
 布局重映射法通过将一个 8x8 子块的每一行分布到不同的 bank 中以实现共享内存的无冲突访问。此处我们以对全局内存里一个 16x64 FP16 矩阵的第一个 16x16 矩阵块进行 `ldmatrix` 为例，整个过程如下图所示：
 
-![swizzle](./assets/swizzle_layout.png)
+![swizzle shift](./assets/swizzle_shift.png)
 
-该过程的关键在于地址的映射，让我们更细致的考察这一过程：
+另一种可行的方式如下图所示：
+
+![swizzle xor](./assets/swizzle_xor.png)
+
+上面两种方式不同的只是地址的映射方式，第二种为 CUTLASS 所采用的方式，即利用异或进行重映射。让我们更细致地考察这一过程：
 
 ![swizzle smem addr](./assets/swizzle_addr.png)
 
@@ -132,6 +150,7 @@ int gRow = gAddr / 64;
 int gCol = gAddr % 64;
 int sCol = (gCol / 8) ^ (gRow & 0x7);
 int sAddr = gRow * 64 + sCol * 8;
+// ld_st_128bit(dst, src)
 ld_st_128bit(smem_a + sAddr, a + gAddr);
 ```
 
@@ -140,13 +159,8 @@ ld_st_128bit(smem_a + sAddr, a + gAddr);
 int r_ = threadIdx.x % 16;
 int c_ = (r_ & 0x7) ^ (2 * threadIdx.y + threadIdx.x / 16);
 
-asm volatile(
-    "ldmatrix.sync.aligned.x4.m8n8.shared.b16 {%0, %1, %2, %3}, [%4];"
-    : "=r"(REG(a_frag.x[0])),
-        "=r"(REG(a_frag.x[2])),
-        "=r"(REG(a_frag.x[4])),
-        "=r"(REG(a_frag.x[6]))
-    : "l"(__cvta_generic_to_shared(smem_a + r_ * 64 + c_ * 8)));
+// 利用前面的封装
+ldmatrix_sync(a_frag.x, smem_a + r_ * 16 + c_ * 8)
 ```
 
 以上实现比较 dirty，但总体上体现了图中的思路。
