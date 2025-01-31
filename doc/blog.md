@@ -164,7 +164,7 @@ ldmatrix_sync(a_frag.x, smem_a + r_ * 16 + c_ * 8)
 ```
 
 以上实现比较 dirty，但总体上体现了图中的思路。
-我们可以预测以下会有多少 LDSM conflict。我们优化之后应当只有加载 B 矩阵和存储 C 矩阵时会有 conflict。假定矩阵 B 和 A 类似，不做 Swizzle 时每个 16x16 子矩阵应当有 7x4 = 28 次conflict，最终应有 28x4=112 次。
+对于矩阵 B 的操作类似，经过 Swizzle 后应当只有 STS 的时候才会产生冲突。现在就让我们揭晓最终的结果吧！
 
 实际运行如下：
 
