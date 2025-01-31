@@ -187,4 +187,131 @@ __global__ void mma16x16_x4_swizzle(half *c, half *a, half *b) {
     ld_st_128bit(c + 8 * tid, smem_c + 8 * tid);
 }
 
+/**
+ * \brief 2 patterns are resolved in this kernel, one is a row 1x256 regarded as
+ * 16x16, the other is block 16x16
+ *
+ * \note this kernel has serious LDSM bank
+ * conflicts calculated as follows
+ *
+ * Pattern 1: 1x256 regarded as 16x16, each 1x256 has 4 bank conflicts, result
+ * in 4x16(rows)x2(matrix A/B) = 128 bank conflicts
+ *
+ * Pattern 2: 16x16 block, each 16x16 has 7x4 bank conflicts, result in
+ * 7x4x16(blocks)x2(matrix A/B) = 896 bank conflicts
+ *
+ * Total bank conflicts = 128 + 896 = 1024
+ */
+__global__ void mma_multi_pattern_simple(half *c, half *a, half *b) {
+    __shared__ half smem_a[16 * 256];
+    __shared__ half smem_b[16 * 256];
+    __shared__ half smem_c[16 * 256];
+
+    int tx = threadIdx.x; // 0-31
+    int ty = threadIdx.y; // 0-15
+
+    int tid = tx + ty * blockDim.x;
+    // TODO: swizzle load A and B
+    ld_st_128bit(smem_a + tid * 8, a + tid * 8);
+    ld_st_128bit(smem_b + tid * 8, b + tid * 8);
+
+    __syncthreads();
+
+    using namespace nvcuda::wmma;
+    fragment<matrix_a, 16, 16, 16, half, row_major> a_frag;
+    fragment<matrix_b, 16, 16, 16, half, col_major> b_frag;
+    fragment<accumulator, 16, 16, 16, half> c_frag;
+
+    fill_fragment(c_frag, 0.0f);
+
+    // 1x256 regarded as 16x16, compute C = A * B^T
+    load_matrix_sync(a_frag, smem_a + 256 * ty, 16);
+    load_matrix_sync(b_frag, smem_b + 256 * ty, 16);
+
+    mma_sync(c_frag, a_frag, b_frag, c_frag);
+
+    store_matrix_sync(smem_c + 256 * ty, c_frag, 16, mem_row_major);
+
+    __syncthreads();
+
+    // 16x16 block, compute C = A * B^T
+    load_matrix_sync(a_frag, smem_a + 16 * ty, 256);
+    load_matrix_sync(b_frag, smem_b + 16 * ty, 256);
+
+    fill_fragment(c_frag, 0.0f);
+    mma_sync(c_frag, a_frag, b_frag, c_frag);
+
+    store_matrix_sync(smem_c + 16 * ty, c_frag, 256, mem_row_major);
+
+    __syncthreads();
+
+    ld_st_128bit(c + tid * 8, smem_c + tid * 8);
+}
+
+__global__ void mma_multi_pattern_swizzle(half *c, half *a, half *b) {
+    __shared__ half smem_a[16 * 256];
+    __shared__ half smem_b[16 * 256];
+    __shared__ half smem_c[16 * 256];
+
+    int tx = threadIdx.x; // 0-31
+    int ty = threadIdx.y; // 0-15
+    int tid = tx + ty * blockDim.x;
+
+    // TODO: swizzle load A and B
+    // [xxxx]    [xxxxx]    [xxx]
+    // [16rows]  [32cols]    [8fp16]
+    // split cols into 4 groups:
+    // [xxxx]    [xx] [xxx]     [xxx]
+
+    int gAddr = tid * 8;
+    // swizzle for 16x16 blocks
+    int g2sAddr = (((gAddr >> 8) & 0x7) << 3) ^ gAddr;
+    // swizzle for 1x256 blocks
+    g2sAddr ^= ((g2sAddr >> 6) & 0x3) << 3;
+    ld_st_128bit(smem_a + g2sAddr, a + gAddr);
+    ld_st_128bit(smem_b + g2sAddr, b + gAddr);
+
+    __syncthreads();
+
+    using namespace nvcuda::wmma;
+    fragment<matrix_a, 16, 16, 16, half, row_major> a_frag;
+    fragment<matrix_b, 16, 16, 16, half, col_major> b_frag;
+    fragment<accumulator, 16, 16, 16, half> c_frag;
+    // TODO: 1x256 regarded as 16x16
+    int rAddr = ty * 256 + (tx % 16) * 16 + (tx / 16 * 8);
+    int r2sAddr = (((rAddr >> 8) & 0x7) << 3) ^ rAddr;
+    r2sAddr ^= ((r2sAddr >> 6) & 0x3) << 3;
+
+    ptx::ldmatrix_sync(a_frag.x, smem_a + r2sAddr);
+    ptx::ldmatrix_sync(b_frag.x, smem_b + r2sAddr);
+
+    half2 tmp = HALF2(b_frag.x[2]);
+    HALF2(b_frag.x[2]) = HALF2(b_frag.x[4]);
+    HALF2(b_frag.x[4]) = tmp;
+
+    fill_fragment(c_frag, 0.0f);
+    mma_sync(c_frag, a_frag, b_frag, c_frag);
+    store_matrix_sync(smem_c + 256 * ty, c_frag, 16, mem_row_major);
+    __syncthreads();
+    // TODO: 16x16 block
+    rAddr = ty * 16 + (tx % 16) * 256 + (tx / 16 * 8);
+    r2sAddr = (((rAddr >> 8) & 0x7) << 3) ^ rAddr;
+    r2sAddr ^= ((r2sAddr >> 6) & 0x3) << 3;
+    // r2sAddr ^= ((rAddr >> 6) & 0x3) << 3;
+    // r2sAddr = (((r2sAddr >> 9) & 0x7) << 3) ^ r2sAddr;
+
+    ptx::ldmatrix_sync(a_frag.x, smem_a + r2sAddr);
+    ptx::ldmatrix_sync(b_frag.x, smem_b + r2sAddr);
+
+    tmp = HALF2(b_frag.x[2]);
+    HALF2(b_frag.x[2]) = HALF2(b_frag.x[4]);
+    HALF2(b_frag.x[4]) = tmp;
+
+    fill_fragment(c_frag, 0.0f);
+    mma_sync(c_frag, a_frag, b_frag, c_frag);
+    store_matrix_sync(smem_c + 16 * ty, c_frag, 256, mem_row_major);
+    __syncthreads();
+    ld_st_128bit(c + tid * 8, smem_c + tid * 8);
+}
+
 } // namespace mma

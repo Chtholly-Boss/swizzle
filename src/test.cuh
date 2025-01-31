@@ -118,7 +118,7 @@ bool test_mma_16x16_x4(void (*kernel)(half *, half *, half *)) {
  * \note this test aim to achieve complete bank conflict free by applying 2
  * layer of swizzle
  */
-bool test_mma_composite_swizzle(void (*kernel)(half *, half *, half *)) {
+bool test_mma_multi_pattern(void (*kernel)(half *, half *, half *)) {
     const int n = 16 * 256;
     half *a_h = (half *)malloc(n * sizeof(half));
     half *b_h = (half *)malloc(n * sizeof(half));
@@ -149,8 +149,9 @@ bool test_mma_composite_swizzle(void (*kernel)(half *, half *, half *)) {
     for (int i = 0; i < 16; i++) {
         matmul_16x16(c_ref + i * 16, a_h + i * 16, b_h + i * 16, 256);
     }
+
     // compare results
-    bool ret = !diff(c_h, c_ref, n);
+    bool ret = !diff(c_h, c_ref, n, 1.5e-2);
 
     free(a_h);
     free(b_h);

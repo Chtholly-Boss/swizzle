@@ -32,11 +32,11 @@ template <typename T> void fill_data(T *data, int n) {
  * \brief Diff 2 arrays of type fp
  */
 template <typename Atype, typename Btype>
-bool diff(Atype *a, Btype *b, int n, float atol = 1e-2) {
+bool diff(Atype a, Btype b, int n, float atol = 1e-2) {
     for (int i = 0; i < n; i++) {
         auto error = (float)a[i] - (float)b[i];
         // check abosulte error
-        if (error > atol) {
+        if (std::abs(error) > atol) {
             std::cout << " \033[1;31mDifference found at index " << i << ": a["
                       << i << "] = " << (float)a[i] << ", b[" << i
                       << "] = " << (float)b[i] << "\033[0m\n";
