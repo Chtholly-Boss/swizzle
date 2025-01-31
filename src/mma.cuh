@@ -38,6 +38,10 @@ __global__ void mma16x16(half *c, half *a, half *b) {
     ld_st_128bit(c + 8 * tx, smem_c + 8 * tx);
 }
 
+/**
+ * \brief C = A * B^T using wmma API with PTX ISA mma instructions, this kernel
+ * illustrates how to use PTX ISA mma wrappers.
+ */
 __global__ void mma16x16_ptx(half *c, half *a, half *b) {
     __shared__ half smem_a[16 * 16];
     __shared__ half smem_b[16 * 16];
@@ -81,6 +85,9 @@ __global__ void mma16x16_ptx(half *c, half *a, half *b) {
     ld_st_128bit(c + 8 * tx, smem_c + 8 * tx);
 }
 
+/**
+ * \brief C = A * B^T with applying swizzle load
+ */
 __global__ void mma16x16_swizzle(half *c, half *a, half *b) {
     __shared__ half smem_a[16 * 16];
     __shared__ half smem_b[16 * 16];
@@ -128,4 +135,56 @@ __global__ void mma16x16_swizzle(half *c, half *a, half *b) {
     __syncthreads();
     ld_st_128bit(c + 8 * threadIdx.x, smem_c + 8 * threadIdx.x);
 }
+
+/**
+ * \brief C = A * B^T with applying swizzle load
+ * \note this kernel serves as a practice of understanding swizzle load, which 4
+ * warps cooperate to load and compute separately
+ */
+__global__ void mma16x16_x4_swizzle(half *c, half *a, half *b) {
+    __shared__ half smem_a[16 * 64];
+    __shared__ half smem_b[16 * 64];
+    __shared__ half smem_c[16 * 64];
+
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+    int tid = tx + ty * blockDim.x;
+    // swizzle load A and B
+    constexpr int stride = 64;
+    int gRow = tid * 8 / stride;
+    int gCol = tid * 8 % stride;
+
+    int g2sRow = gRow;
+    // [xxxx] [xxx] [xxx]
+    // [16row] [8col] [8fp16]
+    int g2sCol = gCol ^ ((gRow & 0x7) << 3);
+
+    ld_st_128bit(smem_a + g2sRow * stride + g2sCol, a + tid * 8);
+    ld_st_128bit(smem_b + g2sRow * stride + g2sCol, b + tid * 8);
+    __syncthreads();
+
+    using namespace nvcuda::wmma;
+    fragment<matrix_a, 16, 16, 16, half, row_major> a_frag;
+    fragment<matrix_b, 16, 16, 16, half, col_major> b_frag;
+    fragment<accumulator, 16, 16, 16, half> c_frag;
+
+    fill_fragment(c_frag, 0.0f);
+    // swizzle load frag a and b
+    int rRow = tx % 16;
+    int rCol = (ty * 2 + tx / 16) * 8;
+    int r2sRow = rRow;
+    int r2sCol = rCol ^ ((rRow & 0x7) << 3);
+    ptx::ldmatrix_sync(a_frag.x, smem_a + r2sRow * stride + r2sCol);
+    ptx::ldmatrix_sync(b_frag.x, smem_b + r2sRow * stride + r2sCol);
+    // swap R1 and R2 of B, this is required by B's layout, more info see PTX
+    half2 tmp = HALF2(b_frag.x[2]);
+    HALF2(b_frag.x[2]) = HALF2(b_frag.x[4]);
+    HALF2(b_frag.x[4]) = tmp;
+    // calc and store
+    mma_sync(c_frag, a_frag, b_frag, c_frag);
+    store_matrix_sync(smem_c + 16 * ty, c_frag, 16 * 4, mem_row_major);
+    __syncthreads();
+    ld_st_128bit(c + 8 * tid, smem_c + 8 * tid);
+}
+
 } // namespace mma
