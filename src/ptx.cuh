@@ -1,6 +1,8 @@
 #pragma once
 #include <cstdint>
+#include <iostream>
 #include <mma.h>
+#include "utils.cuh"
 
 #define REG(val) (*reinterpret_cast<uint32_t *>(&(val)))
 
@@ -43,5 +45,21 @@ __device__ __forceinline__ void mma_sync_m16n8k16(fp16 *c, fp16 *a, fp16 *b) {
                    "r"(REG(b[2])),
                    "r"(0),
                    "r"(0));
+}
+
+__device__ __forceinline__ void stmatrix_sync(fp16 *dst, fp16 *src) {
+    // ! Ampere doesn't have stmatrix.sync, we should simulate it
+    uint64_t private_addr = (uint64_t)dst;
+    uint64_t shared_addr[4];
+#pragma unroll
+    for (int i = 0; i < 4; i++) {
+        shared_addr[i] =
+            __shfl_sync(0xFFFFFFFF, private_addr, i * 8 + threadIdx.x / 4);
+    }
+#pragma unroll
+    for (int i = 0; i < 4; i++) {
+        *(reinterpret_cast<half2 *>(shared_addr[i]) + threadIdx.x % 4) =
+            HALF2(src[2 * i]);
+    }
 }
 } // namespace ptx

@@ -21,7 +21,7 @@ template <typename T> void fill_data(T *data, int n) {
     srand(time(0));
     for (int i = 0; i < n; i++) {
 #ifdef DEBUG
-        data[i] = (float)i;
+        data[i] = (float)(i % 16);
 #else
         data[i] = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
 #endif

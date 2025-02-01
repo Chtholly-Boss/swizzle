@@ -82,6 +82,8 @@ __global__ void mma16x16_ptx(half *c, half *a, half *b) {
     // are interested in LDSM now
     store_matrix_sync(smem_c, c_frag, 16, mem_row_major);
 
+    ptx::stmatrix_sync(smem_c + row * 16 + col * 8, c_frag.x);
+
     __syncthreads();
     ld_st_128bit(c + 8 * tx, smem_c + 8 * tx);
 }
@@ -124,10 +126,12 @@ __global__ void mma16x16_swizzle(half *c, half *a, half *b) {
     mma_sync(c_frag, a_frag, b_frag, c_frag);
 
     // store can also be swizzle, but we are interested in LDSM only
-    store_matrix_sync(smem_c, c_frag, 16, mem_row_major);
+    // store_matrix_sync(smem_c, c_frag, 16, mem_row_major);
+    // __syncthreads();
+    // ld_st_128bit(c + 8 * threadIdx.x, smem_c + 8 * threadIdx.x);
 
-    __syncthreads();
-    ld_st_128bit(c + 8 * threadIdx.x, smem_c + 8 * threadIdx.x);
+    ptx::stmatrix_sync(smem_c + r2sAddr, c_frag.x);
+    ld_st_128bit(c + gAddr, smem_c + g2sAddr);
 }
 
 /**
@@ -176,7 +180,9 @@ __global__ void mma16x16_x4_swizzle(half *c, half *a, half *b) {
     HALF2(b_frag.x[4]) = tmp;
     // calc and store
     mma_sync(c_frag, a_frag, b_frag, c_frag);
-    store_matrix_sync(smem_c + 16 * ty, c_frag, 16 * 4, mem_row_major);
+    // store_matrix_sync(smem_c + 16 * ty, c_frag, 16 * 4, mem_row_major);
+    ptx::stmatrix_sync(smem_c + 16 * ty + (tx % 16) * 64 + (tx / 16) * 8,
+                       c_frag.x);
     __syncthreads();
     ld_st_128bit(c + 8 * tid, smem_c + 8 * tid);
 }
