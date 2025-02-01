@@ -1,5 +1,6 @@
 #pragma once
 #include "ptx.cuh"
+#include "swizzle.cuh"
 #include "utils.cuh"
 
 namespace mma {
@@ -95,16 +96,10 @@ __global__ void mma16x16_swizzle(half *c, half *a, half *b) {
     // swizzle load A and B
     int tx = threadIdx.x;
     // each thread load 8 bytes, so tx * 8 is the offset
-    int gRow = tx * 8 / 16;
-    int gCol = tx * 8 % 16;
-    // map gAddr -> sAddr
-    int g2sRow = gRow; // row unchanged
-    // [xxxx] [x] [xxx]
-    // [row] [col] [8 fp16]
-    // permute col using row's least 3rd bit
-    int g2sCol = gCol ^ (((gRow >> 2) & 1) << 3);
-    ld_st_128bit(smem_a + g2sRow * 16 + g2sCol, a + tx * 8);
-    ld_st_128bit(smem_b + g2sRow * 16 + g2sCol, b + tx * 8);
+    uint32_t gAddr = tx * 8;
+    auto g2sAddr = swizzle<3, 1, 3>(gAddr);
+    ld_st_128bit(smem_a + g2sAddr, a + gAddr);
+    ld_st_128bit(smem_b + g2sAddr, b + gAddr);
     __syncthreads();
 
     using namespace nvcuda::wmma;
@@ -115,12 +110,11 @@ __global__ void mma16x16_swizzle(half *c, half *a, half *b) {
     fill_fragment(c_frag, 0.0f);
 
     // swizzle load frag a and b
-    int rRow = tx % 16;
-    int rCol = (tx / 16) * 8;
-    int r2sRow = rRow;
-    int r2sCol = rCol ^ (((rRow >> 2) & 1) << 3);
-    ptx::ldmatrix_sync(a_frag.x, smem_a + r2sRow * 16 + r2sCol);
-    ptx::ldmatrix_sync(b_frag.x, smem_b + r2sRow * 16 + r2sCol);
+    uint32_t rAddr = (tx % 16) * 16 + (tx / 16) * 8;
+    auto r2sAddr = swizzle<3, 1, 3>(rAddr);
+
+    ptx::ldmatrix_sync(a_frag.x, smem_a + r2sAddr);
+    ptx::ldmatrix_sync(b_frag.x, smem_b + r2sAddr);
     // swap R1 and R2 of B, this is required by B's layout, more info see PTX
     // ISA mma instruction
     half2 tmp = HALF2(b_frag.x[2]);
@@ -257,17 +251,14 @@ __global__ void mma_multi_pattern_swizzle(half *c, half *a, half *b) {
     int ty = threadIdx.y; // 0-15
     int tid = tx + ty * blockDim.x;
 
-    // TODO: swizzle load A and B
+    // swizzle load A and B
     // [xxxx]    [xxxxx]    [xxx]
     // [16rows]  [32cols]    [8fp16]
     // split cols into 4 groups:
     // [xxxx]    [xx] [xxx]     [xxx]
 
-    int gAddr = tid * 8;
-    // swizzle for 16x16 blocks
-    int g2sAddr = (((gAddr >> 8) & 0x7) << 3) ^ gAddr;
-    // swizzle for 1x256 blocks
-    g2sAddr ^= ((g2sAddr >> 6) & 0x3) << 3;
+    uint32_t gAddr = tid * 8;
+    auto g2sAddr = swizzle<3, 2, 3>(swizzle<5, 3, 3>(gAddr));
     ld_st_128bit(smem_a + g2sAddr, a + gAddr);
     ld_st_128bit(smem_b + g2sAddr, b + gAddr);
 
@@ -277,10 +268,9 @@ __global__ void mma_multi_pattern_swizzle(half *c, half *a, half *b) {
     fragment<matrix_a, 16, 16, 16, half, row_major> a_frag;
     fragment<matrix_b, 16, 16, 16, half, col_major> b_frag;
     fragment<accumulator, 16, 16, 16, half> c_frag;
-    // TODO: 1x256 regarded as 16x16
-    int rAddr = ty * 256 + (tx % 16) * 16 + (tx / 16 * 8);
-    int r2sAddr = (((rAddr >> 8) & 0x7) << 3) ^ rAddr;
-    r2sAddr ^= ((r2sAddr >> 6) & 0x3) << 3;
+    // 1x256 regarded as 16x16
+    uint32_t rAddr = ty * 256 + (tx % 16) * 16 + (tx / 16 * 8);
+    auto r2sAddr = swizzle<3, 2, 3>(swizzle<5, 3, 3>(rAddr));
 
     ptx::ldmatrix_sync(a_frag.x, smem_a + r2sAddr);
     ptx::ldmatrix_sync(b_frag.x, smem_b + r2sAddr);
@@ -293,12 +283,9 @@ __global__ void mma_multi_pattern_swizzle(half *c, half *a, half *b) {
     mma_sync(c_frag, a_frag, b_frag, c_frag);
     store_matrix_sync(smem_c + 256 * ty, c_frag, 16, mem_row_major);
     __syncthreads();
-    // TODO: 16x16 block
+    // 16x16 blocks
     rAddr = ty * 16 + (tx % 16) * 256 + (tx / 16 * 8);
-    r2sAddr = (((rAddr >> 8) & 0x7) << 3) ^ rAddr;
-    r2sAddr ^= ((r2sAddr >> 6) & 0x3) << 3;
-    // r2sAddr ^= ((rAddr >> 6) & 0x3) << 3;
-    // r2sAddr = (((r2sAddr >> 9) & 0x7) << 3) ^ r2sAddr;
+    r2sAddr = swizzle<3, 2, 3>(swizzle<5, 3, 3>(rAddr));
 
     ptx::ldmatrix_sync(a_frag.x, smem_a + r2sAddr);
     ptx::ldmatrix_sync(b_frag.x, smem_b + r2sAddr);
