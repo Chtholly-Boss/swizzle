@@ -1,4 +1,4 @@
-# 实用 Swizzle 教程
+# 实用 Swizzle 教程（一）
 实验仓库地址: https://github.com/Chtholly-Boss/swizzle
 ## 前言
 最近科研工作中需要使用 Tensor Core 进行算子优化，在优化过程中发现了大量的 **Bank Conflict**，感到十分苦恼。听说 **CUTLASS** 提出了一种 **Bank Conflict Free** 的 **Swizzle** 技术，感觉很高大上，遂进行了高强度的 RTFM 和博客阅读。
